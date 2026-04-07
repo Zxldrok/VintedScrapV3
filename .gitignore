@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environnements virtuels
+venv/
+env/
+.venv/
+
+# Données personnelles (générées par l'app, non versionnées)
+favoris.json
+recherches.json
+historique.json
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Données utilisateur (générées à l'exécution)
+data/favoris.json
+data/recherches.json
+data/historique.json
+data/historique_recherches.json
+data/cibles.json
+data/compte.json
+
+# Ancien emplacement (migration)
+favoris.json
+recherches.json
+historique.json
+historique_recherches.json
+cibles.json
+compte.json
