@@ -1,25 +1,8 @@
 @echo off
-echo ============================================
-echo   VintedScrap -- Installation des dependances
-echo ============================================
-echo.
+cd /d "%~dp0"
 
-set PYTHON="C:\Users\Adrien\AppData\Local\Programs\Python\Python311\python.exe"
+python -m pip install -r requirements.txt || py -m pip install -r requirements.txt
 
-%PYTHON% --version >nul 2>&1
-IF ERRORLEVEL 1 (
-    echo [ERREUR] Python introuvable au chemin specifie.
-    echo Verifiez le chemin dans installer.bat
+if errorlevel 1 (
     pause
-    exit /b 1
 )
-
-echo [INFO] Installation des bibliotheques requises...
-%PYTHON% -m pip install -r requirements.txt
-
-echo.
-echo [OK] Installation terminee !
-echo.
-echo Pour lancer l'application : double-cliquez sur lancer.bat
-echo.
-pause
