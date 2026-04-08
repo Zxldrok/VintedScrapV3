@@ -100,7 +100,7 @@ VintedScrapV2/
 
 ### 1. Cloner le dépôt
 ```bash
-git clone https://github.com/TON_PSEUDO/VintedScrapV2.git
+git clone https://github.com/Zxldrok/VintedScrapV3.git
 cd VintedScrapV2
 ```
 
