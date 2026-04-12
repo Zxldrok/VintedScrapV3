@@ -1,7 +1,20 @@
 """
-core — Logique métier VintedScrap
-Importez depuis ici : from core import scraper, data, analyzer, ...
+core -- Logique metier VintedScrap
 """
-from . import scraper, data, analyzer, auth, recommandations, comparateur_prix
+from . import (
+    scraper, data, analyzer, auth,
+    recommandations, comparateur_prix,
+    user_profile,
+    plugin_base, plugin_api, plugin_security, plugin_manager,
+    ui_utils,
+    resell,
+)
 
-__all__ = ["scraper", "data", "analyzer", "auth", "recommandations", "comparateur_prix"]
+__all__ = [
+    "scraper", "data", "analyzer", "auth",
+    "recommandations", "comparateur_prix",
+    "user_profile",
+    "plugin_base", "plugin_api", "plugin_security", "plugin_manager",
+    "ui_utils",
+    "resell",
+]

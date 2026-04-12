@@ -6,6 +6,7 @@ Analyse l'historique des recherches pour proposer des annonces personnalisées.
 import json, os, logging, re, unicodedata
 from collections import Counter
 from typing import List, Dict, Optional
+from . import user_profile
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,9 @@ def generer_requetes_recommandation(max_termes: int = 5) -> List[str]:
     Génère une liste de termes de recherche à lancer pour les recommandations.
     Basé sur les recherches les plus fréquentes de l'utilisateur.
     """
-    suggestions = obtenir_suggestions_populaires(max_termes)
+    suggestions = user_profile.get_preferred_search_terms(max_termes)
+    if not suggestions:
+        suggestions = obtenir_suggestions_populaires(max_termes)
     if not suggestions:
         return []
     return suggestions

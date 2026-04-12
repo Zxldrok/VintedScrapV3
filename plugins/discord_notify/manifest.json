@@ -1,0 +1,14 @@
+{
+  "id": "discord_notify",
+  "name": "Discord Notifier",
+  "version": "1.0.0",
+  "author": "VintedScrap Community",
+  "description": "Envoie une notification Discord via webhook lors d'une nouvelle annonce.",
+  "min_app_version": "3.0.0",
+  "hooks": ["on_new_annonce", "on_app_start"],
+  "permissions": ["network", "notifications", "write_data"],
+  "config_schema": {
+    "webhook_url": {"type": "string", "label": "URL du Webhook Discord", "required": true},
+    "prix_max":    {"type": "number", "label": "Prix maximum à notifier (€)", "default": 999}
+  }
+}

@@ -13,7 +13,7 @@ RECHERCHES_FILE = os.path.join(_DATA_DIR, "recherches.json")
 HISTORIQUE_FILE = os.path.join(_DATA_DIR, "historique.json")
 CIBLES_FILE     = os.path.join(_DATA_DIR, "cibles.json")
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _favoris_cache: Optional[list] = None
 
 

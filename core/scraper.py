@@ -2,7 +2,7 @@
 scraper.py — Module de scraping pour Vinted (multi-pays)
 """
 
-import requests, json, re, csv, time, logging, unicodedata
+import requests, json, re, csv, time, logging, unicodedata, uuid, html
 from typing import Optional
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -102,25 +102,37 @@ class Annonce:
         self.pays         = data.get("country_iso_code", "")
 
     def _parse_condition_id(self, data):
-        raw = data.get("status", 0)
-        if isinstance(raw, int): return raw
-        if isinstance(raw, str):
-            try: return int(raw)
-            except ValueError: pass
-            return _CONDITION_ID_BY_STR.get(raw.lower().strip(), 0)
+        for key in ("status", "status_id", "condition_id", "catalog_id"):
+            raw = data.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, int): return raw
+            if isinstance(raw, str):
+                try: return int(raw)
+                except ValueError: pass
+                return _CONDITION_ID_BY_STR.get(raw.lower().strip(), 0)
         return 0
 
     def _parse_price(self, data):
         try:
             p = data.get("price", 0)
-            if isinstance(p, dict): return float(p.get("amount", 0))
-            if p: return float(p)
-            return float(data.get("price_numeric", 0))
+            if isinstance(p, dict):
+                return float(p.get("amount", 0))
+            if p:
+                return float(p)
+            pn = data.get("price_numeric") or data.get("price_with_service_fee", {})
+            if isinstance(pn, dict):
+                return float(pn.get("amount", 0))
+            if pn:
+                return float(pn)
+            return 0.0
         except (ValueError, TypeError): return 0.0
 
     def _parse_currency(self, data):
         p = data.get("price", {})
         if isinstance(p, dict): return p.get("currency_code", "EUR")
+        pn = data.get("price_with_service_fee", {})
+        if isinstance(pn, dict): return pn.get("currency_code", "EUR")
         return data.get("currency", "EUR")
 
     def _parse_url(self, data):
@@ -134,7 +146,19 @@ class Annonce:
         photos = data.get("photos", [])
         if photos:
             p = photos[0]
-            return p.get("full_size_url") or p.get("url") or p.get("src", "")
+            url = (p.get("full_size_url")
+                   or p.get("url")
+                   or (p.get("high_resolution") or {}).get("url")
+                   or p.get("src", ""))
+            if url:
+                return url
+        photo = data.get("photo", {})
+        if isinstance(photo, dict):
+            url = (photo.get("full_size_url")
+                   or photo.get("url")
+                   or (photo.get("high_resolution") or {}).get("url", ""))
+            if url:
+                return url
         return None
 
     def prix_affiche(self) -> str:
@@ -172,11 +196,16 @@ class VintedScraper:
         headers = {
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/124.0.0.0 Safari/537.36"),
+                           "Chrome/130.0.0.0 Safari/537.36"),
             "Accept":           "application/json, text/plain, */*",
             "Accept-Language":  f"{config['lang']},en;q=0.8",
+            "Accept-Encoding":  "gzip, deflate, br",
             "Referer":          self.base_url + "/",
             "Origin":           self.base_url,
+            "X-Anon-Id":        str(uuid.uuid4()),
+            "Sec-Fetch-Dest":   "empty",
+            "Sec-Fetch-Mode":   "cors",
+            "Sec-Fetch-Site":   "same-origin",
         }
         self.session.headers.clear()
         self.session.headers.update(headers)
@@ -229,7 +258,11 @@ class VintedScraper:
             except json.JSONDecodeError:
                 logger.error("Réponse non-JSON."); break
             items = data.get("items", [])
-            if not items: break
+            if not items:
+                items = data.get("catalog_items", [])
+            if not items:
+                logger.warning(f"Aucun item page {page}. Clés reçues : {list(data.keys())}")
+                break
             tous_items.extend(items)
             logger.info(f"Page {page} → {len(items)} annonces.")
             if len(items) < par_page: break
@@ -259,18 +292,61 @@ class VintedScraper:
         return resultats
 
     def fetch_description(self, annonce) -> str:
-        """Récupère la description via JSON-LD de la page produit."""
+        """Récupère la description depuis plusieurs sources de la page produit."""
         try:
             r = self.session.get(annonce.url, timeout=12)
             r.raise_for_status()
-            match = re.search(r'<script type="application/ld\+json">(.*?)</script>',
-                              r.text, re.DOTALL | re.IGNORECASE)
-            if match:
-                data = json.loads(match.group(1))
-                desc = data.get("description", "")
-                if desc:
-                    annonce.description = desc
-                    return desc
+            page = r.text
+
+            def _clean(desc: str) -> str:
+                if not desc:
+                    return ""
+                desc = html.unescape(desc).replace("\\n", "\n").replace("\\r", "")
+                desc = re.sub(r"\s+", " ", desc).strip()
+                return desc
+
+            def _from_obj(obj):
+                if isinstance(obj, dict):
+                    desc = _clean(obj.get("description", ""))
+                    if desc:
+                        return desc
+                    for value in obj.values():
+                        found = _from_obj(value)
+                        if found:
+                            return found
+                elif isinstance(obj, list):
+                    for value in obj:
+                        found = _from_obj(value)
+                        if found:
+                            return found
+                return ""
+
+            scripts = re.findall(
+                r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+                page, re.DOTALL | re.IGNORECASE
+            )
+            for raw in scripts:
+                try:
+                    desc = _from_obj(json.loads(raw.strip()))
+                    if desc:
+                        annonce.description = desc
+                        return desc
+                except Exception:
+                    continue
+
+            patterns = [
+                r'"description"\s*:\s*"((?:\\.|[^"\\])*)"',
+                r'"item_description"\s*:\s*"((?:\\.|[^"\\])*)"',
+                r'"desc"\s*:\s*"((?:\\.|[^"\\])*)"'
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, page, re.DOTALL | re.IGNORECASE)
+                if match:
+                    desc = _clean(match.group(1))
+                    if desc:
+                        annonce.description = desc
+                        return desc
+
             return ""
         except Exception as e:
             logger.error(f"fetch_description : {e}")

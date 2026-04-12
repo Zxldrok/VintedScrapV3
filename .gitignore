@@ -1,4 +1,6 @@
+# =========================
 # Python
+# =========================
 __pycache__/
 *.py[cod]
 *.pyo
@@ -9,42 +11,47 @@ dist/
 build/
 .eggs/
 
+# =========================
 # Environnements virtuels
+# =========================
 venv/
 env/
 .venv/
 
-# Données personnelles (générées par l'app, non versionnées)
-favoris.json
-recherches.json
-historique.json
+# =========================
+# Données utilisateur (générées à l'exécution, non versionnées)
+# =========================
+data/historique.json
+data/historique_recherches.json
+data/favoris.json
+data/recherches.json
+data/cibles.json
+data/compte.json
+data/user_profile.json
+data/user_events.json
+data/plugins_registry.json
 
+# =========================
 # IDE
+# =========================
 .vscode/
 .idea/
 *.sublime-project
 *.sublime-workspace
 
+# =========================
 # OS
+# =========================
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Logs
+# =========================
+# Logs & fichiers temporaires
+# =========================
 *.log
-
-# Données utilisateur (générées à l'exécution)
-data/favoris.json
-data/recherches.json
-data/historique.json
-data/historique_recherches.json
-data/cibles.json
-data/compte.json
-
-# Ancien emplacement (migration)
-favoris.json
-recherches.json
-historique.json
-historique_recherches.json
-cibles.json
-compte.json
+*.txt.bak
+*_out.txt
+*_err.txt
+_syntax_result.txt
+_extract_result.txt

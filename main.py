@@ -32,7 +32,7 @@ try:
 except ImportError:
     _WINSOUND = False
 
-from core import scraper, data, analyzer, recommandations, comparateur_prix, auth
+from core import scraper, data, analyzer, recommandations, comparateur_prix, auth, user_profile, resell
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -774,6 +774,226 @@ class FenetreComparateurPrix(ctk.CTkToplevel):
 
 
 # ─── Carte Annonce (mode grille) ──────────────────────────────────────────────
+
+# ─── Fenetre Resultats Revente ────────────────────────────────────────────────
+
+class FenetreRevente(ctk.CTkToplevel):
+    """Popup presentant l'analyse complete pour la revente d'un produit."""
+
+    def __init__(self, master, analyse):
+        super().__init__(master)
+        self.title(f"Analyse Revente — {analyse.produit[:40]}")
+        self.configure(fg_color=C["bg"])
+        self.attributes("-topmost", True)
+        self.resizable(True, True)
+        self.geometry("560x780")
+        self._analyse = analyse
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        scroll = ctk.CTkScrollableFrame(self, fg_color="transparent",
+                                        scrollbar_button_color=C["border"],
+                                        scrollbar_button_hover_color=C["accent"])
+        scroll.grid(row=0, column=0, sticky="nsew")
+        scroll.grid_columnconfigure(0, weight=1)
+        self._construire(scroll, analyse)
+        self.update_idletasks()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"560x780+{(sw-560)//2}+{(sh-780)//2}")
+
+    def _construire(self, parent, a):
+        row = 0
+
+        # Score opportunite
+        score_color = (C["prix"] if a.score_opportunite >= 70
+                       else C["alerte_on"] if a.score_opportunite >= 40
+                       else C["fav"])
+        score_label = ("Excellente opportunité 🚀" if a.score_opportunite >= 70
+                       else "Opportunité correcte ✅" if a.score_opportunite >= 50
+                       else "Opportunité limitée ⚠️" if a.score_opportunite >= 30
+                       else "Peu rentable ❌")
+
+        hero = ctk.CTkFrame(parent, fg_color=C["card"], corner_radius=16,
+                            border_width=2, border_color=score_color)
+        hero.grid(row=row, column=0, padx=16, pady=(16, 8), sticky="ew"); row += 1
+        hero.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(hero, text="SCORE D'OPPORTUNITÉ",
+                     font=ctk.CTkFont(size=10, weight="bold"), text_color=C["t3"]
+        ).grid(row=0, column=0, padx=16, pady=(12, 2), sticky="w")
+
+        score_row = ctk.CTkFrame(hero, fg_color="transparent")
+        score_row.grid(row=1, column=0, padx=16, pady=(0, 4), sticky="ew")
+        score_row.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(score_row, text=f"{a.score_opportunite}/100",
+                     font=ctk.CTkFont(family=FONT, size=36, weight="bold"),
+                     text_color=score_color
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(score_row, text=score_label,
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=score_color, wraplength=300, justify="left"
+        ).grid(row=0, column=1, padx=(12, 0), sticky="w")
+
+        bar_bg = ctk.CTkFrame(hero, fg_color=C["border"], corner_radius=4, height=6)
+        bar_bg.grid(row=2, column=0, padx=16, pady=(4, 14), sticky="ew")
+        bar_pct = max(0.02, a.score_opportunite / 100)
+        bar_fg = ctk.CTkFrame(bar_bg, fg_color=score_color, corner_radius=4, height=6)
+        bar_fg.place(relx=0, rely=0, relwidth=bar_pct, relheight=1)
+
+        # Prix & marge
+        pf = ctk.CTkFrame(parent, fg_color=C["card"], corner_radius=14,
+                          border_width=1, border_color=C["border"])
+        pf.grid(row=row, column=0, padx=16, pady=4, sticky="ew"); row += 1
+        pf.grid_columnconfigure((0, 1, 2), weight=1)
+
+        def metric(par, col, label, value, color=C["t1"]):
+            f = ctk.CTkFrame(par, fg_color="transparent")
+            f.grid(row=0, column=col, padx=8, pady=12, sticky="ew")
+            ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=9, weight="bold"),
+                         text_color=C["t3"]).pack()
+            ctk.CTkLabel(f, text=value,
+                         font=ctk.CTkFont(family=FONT, size=16, weight="bold"),
+                         text_color=color).pack()
+
+        metric(pf, 0, "PRIX D'ACHAT",
+               f"{a.prix_achat:.2f} €", C["t2"])
+        metric(pf, 1, "PRIX SUGGÉRÉ",
+               f"{a.prix_suggere:.2f} €", C["accent"])
+        mc = C["prix"] if a.marge_pct >= 0 else C["fav"]
+        metric(pf, 2, "MARGE ESTIMÉE",
+               f"+{a.marge_estimee:.2f} €\n({a.marge_pct:+.0f}%)", mc)
+
+        # Marche
+        if a.nb_annonces > 0:
+            mf = ctk.CTkFrame(parent, fg_color=C["card"], corner_radius=14,
+                              border_width=1, border_color=C["border"])
+            mf.grid(row=row, column=0, padx=16, pady=4, sticky="ew"); row += 1
+            mf.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(mf, text="📊  Marché actuel",
+                         font=ctk.CTkFont(size=11, weight="bold"), text_color=C["t1"]
+            ).grid(row=0, column=0, padx=14, pady=(10, 6), sticky="w")
+            mr = ctk.CTkFrame(mf, fg_color="transparent")
+            mr.grid(row=1, column=0, padx=14, pady=(0, 10), sticky="ew")
+            mr.grid_columnconfigure((0, 1, 2), weight=1)
+            for col, (lbl, val) in enumerate([
+                ("Annonces", str(a.nb_annonces)),
+                ("Prix moyen", f"{a.prix_marche_moyen:.2f} €"),
+                ("Fourchette",
+                 f"{a.prix_marche_min:.0f}–{a.prix_marche_max:.0f} €"),
+            ]):
+                f2 = ctk.CTkFrame(mr, fg_color="transparent")
+                f2.grid(row=0, column=col, sticky="ew")
+                ctk.CTkLabel(f2, text=lbl, font=ctk.CTkFont(size=9),
+                             text_color=C["t3"]).pack()
+                ctk.CTkLabel(f2, text=val,
+                             font=ctk.CTkFont(size=12, weight="bold"),
+                             text_color=C["t1"]).pack()
+
+        # Conseil
+        cf = ctk.CTkFrame(parent, fg_color="#1a2a1a", corner_radius=12,
+                          border_width=1, border_color=C["prix"])
+        cf.grid(row=row, column=0, padx=16, pady=4, sticky="ew"); row += 1
+        ctk.CTkLabel(cf, text=a.conseil,
+                     font=ctk.CTkFont(size=11), text_color=C["t1"],
+                     wraplength=490, justify="left"
+        ).grid(row=0, column=0, padx=14, pady=10, sticky="w")
+
+        # Titre
+        tf = ctk.CTkFrame(parent, fg_color=C["card"], corner_radius=14,
+                          border_width=1, border_color=C["border"])
+        tf.grid(row=row, column=0, padx=16, pady=4, sticky="ew"); row += 1
+        tf.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(tf, text="✏️  Titre de l'annonce",
+                     font=ctk.CTkFont(size=11, weight="bold"), text_color=C["t1"]
+        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
+        self._titre_var = ctk.StringVar(value=a.titre)
+        ctk.CTkEntry(tf, textvariable=self._titre_var, height=36, corner_radius=8,
+                     font=ctk.CTkFont(size=12),
+                     fg_color=C["input_bg"], border_color=C["accent"],
+                     text_color=C["t1"]
+        ).grid(row=1, column=0, padx=14, pady=(0, 4), sticky="ew")
+        ctk.CTkLabel(tf, text=f"{len(a.titre)}/60 caractères",
+                     font=ctk.CTkFont(size=9), text_color=C["t3"]
+        ).grid(row=2, column=0, padx=14, pady=(0, 8), sticky="w")
+
+        # Description
+        df = ctk.CTkFrame(parent, fg_color=C["card"], corner_radius=14,
+                          border_width=1, border_color=C["border"])
+        df.grid(row=row, column=0, padx=16, pady=4, sticky="ew"); row += 1
+        df.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(df, text="📝  Description de l'annonce",
+                     font=ctk.CTkFont(size=11, weight="bold"), text_color=C["t1"]
+        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
+        self._desc_box = ctk.CTkTextbox(df, height=180, corner_radius=8,
+                                        font=ctk.CTkFont(size=11),
+                                        fg_color=C["input_bg"], text_color=C["t1"],
+                                        border_color=C["border"], border_width=1)
+        self._desc_box.grid(row=1, column=0, padx=14, pady=(0, 8), sticky="ew")
+        self._desc_box.insert("1.0", a.description)
+
+        # Annonces de reference
+        if a.annonces_ref:
+            rf = ctk.CTkFrame(parent, fg_color=C["card"], corner_radius=14,
+                              border_width=1, border_color=C["border"])
+            rf.grid(row=row, column=0, padx=16, pady=4, sticky="ew"); row += 1
+            rf.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(rf, text="🔗  Annonces similaires",
+                         font=ctk.CTkFont(size=11, weight="bold"), text_color=C["t1"]
+            ).grid(row=0, column=0, padx=14, pady=(10, 6), sticky="w")
+            for i, ann in enumerate(a.annonces_ref[:4], 1):
+                ar = ctk.CTkFrame(rf, fg_color=C["tag_bg"], corner_radius=8)
+                ar.grid(row=i, column=0, padx=14, pady=2, sticky="ew")
+                ar.grid_columnconfigure(0, weight=1)
+                t = (ann.title[:45] + "…") if len(ann.title) > 45 else ann.title
+                ctk.CTkLabel(ar, text=t, font=ctk.CTkFont(size=10),
+                             text_color=C["t2"], anchor="w"
+                ).grid(row=0, column=0, padx=8, pady=4, sticky="w")
+                ctk.CTkLabel(ar, text=ann.prix_affiche(),
+                             font=ctk.CTkFont(size=11, weight="bold"),
+                             text_color=C["prix"]
+                ).grid(row=0, column=1, padx=8, pady=4)
+                ctk.CTkButton(ar, text="→", width=28, height=24, corner_radius=6,
+                              fg_color="transparent", hover_color=C["border"],
+                              text_color=C["t3"], font=ctk.CTkFont(size=12),
+                              command=lambda u=ann.url: webbrowser.open(u)
+                ).grid(row=0, column=2, padx=(0, 6), pady=2)
+            ctk.CTkFrame(rf, fg_color="transparent", height=8
+            ).grid(row=len(a.annonces_ref[:4])+1, column=0)
+
+        # Boutons action
+        bf = ctk.CTkFrame(parent, fg_color="transparent")
+        bf.grid(row=row, column=0, padx=16, pady=(8, 20), sticky="ew"); row += 1
+        bf.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkButton(bf, text="📋  Copier le titre", height=38,
+                      corner_radius=10, fg_color=C["border"],
+                      hover_color=C["card_hover"], text_color=C["t1"],
+                      font=ctk.CTkFont(size=12),
+                      command=self._copier_titre
+        ).grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        ctk.CTkButton(bf, text="📄  Copier la description", height=38,
+                      corner_radius=10, fg_color=C["border"],
+                      hover_color=C["card_hover"], text_color=C["t1"],
+                      font=ctk.CTkFont(size=12),
+                      command=self._copier_description
+        ).grid(row=0, column=1, padx=(4, 0), sticky="ew")
+        produit_enc = self._analyse.produit.replace(" ", "+")
+        ctk.CTkButton(bf, text="🔍  Rechercher sur Vinted", height=38,
+                      corner_radius=10, fg_color=C["accent"],
+                      hover_color=C["accent_hover"], text_color="#000000",
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      command=lambda p=produit_enc: webbrowser.open(
+                          f"https://www.vinted.fr/catalog?search_text={p}")
+        ).grid(row=1, column=0, columnspan=2, pady=(6, 0), sticky="ew")
+
+    def _copier_titre(self):
+        self.clipboard_clear()
+        self.clipboard_append(self._titre_var.get())
+        envoyer_toast("Copié !", "Titre copié dans le presse-papier.")
+
+    def _copier_description(self):
+        self.clipboard_clear()
+        self.clipboard_append(self._desc_box.get("1.0", "end").strip())
+        envoyer_toast("Copié !", "Description copiée dans le presse-papier.")
+
 
 class CarteAnnonce(ctk.CTkFrame):
     """
@@ -1575,11 +1795,13 @@ class AppVinted(ctk.CTk):
         tabs.add("Favoris")
         tabs.add("Sauv.")
         tabs.add("Ciblage")
+        tabs.add("Revente")
 
         self._construire_tab_recherche(tabs.tab("Recherche"))
         self._construire_tab_favoris(tabs.tab("Favoris"))
         self._construire_tab_sauvegardes(tabs.tab("Sauv."))
         self._construire_tab_ciblage(tabs.tab("Ciblage"))
+        self._construire_tab_revente(tabs.tab("Revente"))
 
         self.lbl_stats = ctk.CTkLabel(sb, text="", font=ctk.CTkFont(size=10),
                                       text_color=C["t3"], justify="center")
@@ -1965,6 +2187,122 @@ class AppVinted(ctk.CTk):
         self.rafraichir_cibles()
 
     # ── Zone principale ────────────────────────────────────────────────────────
+
+    # ── Tab Revente ────────────────────────────────────────────────────────────
+
+    def _construire_tab_revente(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        row = 0
+
+        ctk.CTkLabel(tab, text="💹  Achat-Revente",
+                     font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
+                     text_color=C["accent"], anchor="w"
+        ).grid(row=row, column=0, padx=16, pady=(14, 2), sticky="w"); row += 1
+
+        ctk.CTkLabel(tab, text="Estimez votre revente avant d’acheter.",
+                     font=ctk.CTkFont(size=10), text_color=C["t3"], anchor="w"
+        ).grid(row=row, column=0, padx=16, pady=(0, 10), sticky="w"); row += 1
+
+        ctk.CTkLabel(tab, text="PRODUIT",
+                     font=ctk.CTkFont(size=9, weight="bold"),
+                     text_color=C["t3"], anchor="w"
+        ).grid(row=row, column=0, padx=16, pady=(4, 2), sticky="w"); row += 1
+
+        self._resell_produit = ctk.CTkEntry(
+            tab, placeholder_text="ex : Nike Air Max 90, iPhone 13…",
+            height=36, corner_radius=8, font=ctk.CTkFont(size=12),
+            fg_color=C["input_bg"], border_color=C["border"],
+            border_width=1, text_color=C["t1"])
+        self._resell_produit.grid(
+            row=row, column=0, padx=16, pady=(0, 8), sticky="ew"); row += 1
+        self._resell_produit.bind("<Return>", lambda _: self._lancer_analyse_revente())
+
+        ctk.CTkLabel(tab, text="PRIX D’ACHAT (€)",
+                     font=ctk.CTkFont(size=9, weight="bold"),
+                     text_color=C["t3"], anchor="w"
+        ).grid(row=row, column=0, padx=16, pady=(4, 2), sticky="w"); row += 1
+
+        self._resell_prix = ctk.CTkEntry(
+            tab, placeholder_text="ex : 25.00",
+            height=36, corner_radius=8, font=ctk.CTkFont(size=12),
+            fg_color=C["input_bg"], border_color=C["border"],
+            border_width=1, text_color=C["t1"])
+        self._resell_prix.grid(
+            row=row, column=0, padx=16, pady=(0, 8), sticky="ew"); row += 1
+
+        ctk.CTkLabel(tab, text="ÉTAT (optionnel)",
+                     font=ctk.CTkFont(size=9, weight="bold"),
+                     text_color=C["t3"], anchor="w"
+        ).grid(row=row, column=0, padx=16, pady=(4, 2), sticky="w"); row += 1
+
+        self._resell_etat = ctk.CTkOptionMenu(
+            tab, values=resell.CONDITIONS,
+            fg_color=C["input_bg"], button_color=C["border"],
+            button_hover_color=C["accent"], text_color=C["t1"],
+            font=ctk.CTkFont(size=11))
+        self._resell_etat.set("Très bon état")
+        self._resell_etat.grid(
+            row=row, column=0, padx=16, pady=(0, 12), sticky="ew"); row += 1
+
+        self._resell_btn = ctk.CTkButton(
+            tab, text="🔍  Analyser le marché",
+            height=38, corner_radius=10,
+            fg_color=C["accent"], hover_color=C["accent_hover"],
+            text_color="#000000",
+            font=ctk.CTkFont(family=FONT, size=12, weight="bold"),
+            command=self._lancer_analyse_revente)
+        self._resell_btn.grid(
+            row=row, column=0, padx=16, pady=(0, 8), sticky="ew"); row += 1
+
+        self._resell_status = ctk.CTkLabel(
+            tab, text="", font=ctk.CTkFont(size=10),
+            text_color=C["t3"], wraplength=280, justify="left")
+        self._resell_status.grid(row=row, column=0, padx=16, sticky="ew")
+
+    def _lancer_analyse_revente(self):
+        produit = self._resell_produit.get().strip()
+        if not produit:
+            self._resell_status.configure(
+                text="⚠️ Entrez un nom de produit.",
+                text_color=C["alerte_on"])
+            return
+        prix_str = self._resell_prix.get().strip().replace(",", ".")
+        try:
+            prix_achat = float(prix_str) if prix_str else 0.0
+        except ValueError:
+            self._resell_status.configure(
+                text="⚠️ Prix invalide.",
+                text_color=C["alerte_on"])
+            return
+        etat = self._resell_etat.get()
+        self._resell_btn.configure(
+            state="disabled", text="⏳  Analyse en cours…")
+        self._resell_status.configure(
+            text=f"Recherche de « {produit} » sur Vinted…",
+            text_color=C["t3"])
+
+        def _run():
+            try:
+                analyse = resell.analyser_revente(
+                    produit, prix_achat, etat, self.scraper)
+                self.after(0, lambda a=analyse: self._afficher_resultat_revente(a))
+            except Exception as ex:
+                def _reset(e=ex):
+                    self._resell_status.configure(
+                        text=f"Erreur : {e}", text_color=C["fav"])
+                    self._resell_btn.configure(
+                        state="normal",
+                        text="🔍  Analyser le marché")
+                self.after(0, _reset)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _afficher_resultat_revente(self, analyse):
+        self._resell_btn.configure(
+            state="normal", text="🔍  Analyser le marché")
+        self._resell_status.configure(text="")
+        FenetreRevente(self, analyse)
+
 
     def _construire_zone_principale(self):
         main = ctk.CTkFrame(self, fg_color=C["bg"], corner_radius=0)
