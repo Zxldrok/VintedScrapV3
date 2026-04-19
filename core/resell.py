@@ -1,23 +1,27 @@
 """
-core/resell.py — Module d'aide à l'achat-revente Vinted
-=========================================================
+core/resell.py - Module d'aide a l'achat-revente Vinted
+======================================================
 Fournit :
-  - Analyse du marché pour un produit donné
-  - Estimation du prix de revente optimal
-  - Génération de titre attractif
-  - Génération de description optimisée
-Utilise l'API Vinted via scraper + Claude via l'API Anthropic.
+  - Analyse du marche pour un produit donne
+  - Estimation d'un prix de vente rapide et d'un prix cible
+  - Generation d'un titre et d'une description reutilisables
+  - Score d'opportunite et niveau de confiance
 """
 
 from __future__ import annotations
-import logging, statistics, re, unicodedata
+
+import logging
+import math
+import re
+import statistics
+import unicodedata
 from dataclasses import dataclass, field
-from typing import Optional
 
 log = logging.getLogger("resell")
 
-# ─── Conditions disponibles ────────────────────────────────────────────────────
+
 CONDITIONS = [
+    "Tous états",
     "Neuf avec étiquette",
     "Neuf sans étiquette",
     "Très bon état",
@@ -26,258 +30,344 @@ CONDITIONS = [
 ]
 
 CONDITIONS_ID = {
-    "Neuf avec étiquette":  6,
-    "Neuf sans étiquette":  4,
-    "Très bon état":        1,
-    "Bon état":             2,
-    "Satisfaisant":         3,
+    "Neuf avec étiquette": 6,
+    "Neuf sans étiquette": 4,
+    "Très bon état": 1,
+    "Bon état": 2,
+    "Satisfaisant": 3,
 }
 
-# Coefficient de décote selon l'état (par rapport au prix neuf)
-DECOTE_ETAT = {
-    "Neuf avec étiquette":  0.90,
-    "Neuf sans étiquette":  0.80,
-    "Très bon état":        0.65,
-    "Bon état":             0.50,
-    "Satisfaisant":         0.35,
-}
-
-# Marge bénéficiaire cible minimale
 MARGE_MIN = 0.15
+FRAIS_PLATEFORME = 0.05
+FRAIS_EXPEDITION = 2.50
 
 
 @dataclass
 class AnalyseRevente:
-    produit:           str
-    prix_achat:        float
-    etat:              str
+    produit: str
+    prix_achat: float
+    etat: str
     prix_marche_moyen: float
-    prix_marche_min:   float
-    prix_marche_max:   float
-    nb_annonces:       int
-    prix_suggere:      float
-    marge_estimee:     float
-    marge_pct:         float
-    titre:             str
-    description:       str
-    conseil:           str
-    score_opportunite: int        # 0-100
-    annonces_ref:      list = field(default_factory=list)
+    prix_marche_min: float
+    prix_marche_max: float
+    prix_marche_mediane: float
+    nb_annonces: int
+    prix_suggere: float
+    prix_vente_rapide: float
+    prix_min_rentable: float
+    frais_plateforme: float
+    frais_expedition: float
+    marge_estimee: float
+    marge_pct: float
+    marge_nette: float
+    marge_nette_pct: float
+    titre: str
+    description: str
+    conseil: str
+    score_opportunite: int
+    fiabilite_marche: int
+    annonces_ref: list = field(default_factory=list)
 
-    def fmt(self, v: float) -> str:
-        return f"{v:.2f} €"
+    def fmt(self, value: float) -> str:
+        return f"{value:.2f} €"
 
 
-def _normaliser(s: str) -> str:
-    s = unicodedata.normalize("NFD", s)
-    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-    return re.sub(r"[^a-z0-9\s]", " ", s.lower()).strip()
+def _normaliser(text: str) -> str:
+    text = unicodedata.normalize("NFD", text or "")
+    text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+    return re.sub(r"[^a-z0-9\s]", " ", text.lower()).strip()
 
 
-def analyser_marche(produit: str, etat: str, scraper_instance) -> tuple[list, float, float, float]:
+def _tokens(text: str) -> set[str]:
+    return {token for token in _normaliser(text).split() if len(token) >= 2}
+
+
+def _similarite_titre(reference: str, title: str) -> float:
+    ref_tokens = _tokens(reference)
+    cand_tokens = _tokens(title)
+    if not ref_tokens or not cand_tokens:
+        return 0.0
+    return len(ref_tokens & cand_tokens) / len(ref_tokens)
+
+
+def _filtrer_outliers(prices: list[float]) -> list[float]:
+    if len(prices) < 4:
+        return prices
+
+    mediane = statistics.median(prices)
+    deviations = [abs(price - mediane) for price in prices]
+    mad = statistics.median(deviations)
+    if mad == 0:
+        return prices
+
+    filtered = [price for price in prices if abs(price - mediane) / mad <= 3.5]
+    minimum_expected = max(3, len(prices) // 2)
+    return filtered if len(filtered) >= minimum_expected else prices
+
+
+def _prix_attractif(value: float) -> float:
+    if value <= 0:
+        return 0.0
+    if value < 1:
+        return round(value, 2)
+
+    lower = max(0.99, math.floor(value) - 0.01)
+    upper = math.floor(value) + 0.99
+    choice = min((round(lower, 2), round(upper, 2)), key=lambda candidate: abs(candidate - value))
+    return round(choice, 2)
+
+
+def _fiabilite_marche(prices: list[float]) -> int:
+    if not prices:
+        return 10
+
+    count = len(prices)
+    if count >= 20:
+        score = 90
+    elif count >= 10:
+        score = 78
+    elif count >= 5:
+        score = 64
+    elif count >= 3:
+        score = 48
+    else:
+        score = 30
+
+    if count >= 2:
+        mediane = statistics.median(prices)
+        spread = statistics.pstdev(prices) / max(mediane, 1)
+        if spread < 0.12:
+            score += 10
+        elif spread < 0.22:
+            score += 4
+        elif spread > 0.40:
+            score -= 15
+        elif spread > 0.28:
+            score -= 6
+
+    return max(5, min(100, score))
+
+
+def analyser_marche(
+    produit: str,
+    etat: str,
+    scraper_instance,
+) -> tuple[list, float, float, float, float, int]:
     """
     Recherche les annonces similaires sur Vinted.
-    Retourne (annonces, moyenne, min, max).
+    Retourne (annonces_ref, moyenne, min, max, mediane, fiabilite).
     """
     try:
         annonces = scraper_instance.rechercher(
             produit, max_pages=3, par_page=48, order="newest_first"
         )
-    except Exception as e:
-        log.error(f"Erreur scraping marché : {e}")
-        return [], 0.0, 0.0, 0.0
+    except Exception as exc:
+        log.error(f"Erreur scraping marche : {exc}")
+        return [], 0.0, 0.0, 0.0, 0.0, 10
 
-    # Filtrer par état si précisé
-    cid = CONDITIONS_ID.get(etat)
-    if cid:
-        filtrees = [a for a in annonces if a.condition_id == cid]
+    if not annonces:
+        return [], 0.0, 0.0, 0.0, 0.0, 10
+
+    similaires = [
+        annonce for annonce in annonces
+        if _similarite_titre(produit, annonce.title) >= 0.45
+    ]
+    if len(similaires) >= 3:
+        annonces = similaires
+
+    condition_id = CONDITIONS_ID.get(etat)
+    if condition_id:
+        filtrees = [annonce for annonce in annonces if annonce.condition_id == condition_id]
         if len(filtrees) >= 3:
             annonces = filtrees
 
-    # Garder seulement les annonces avec prix > 0
-    prices = [a.price for a in annonces if a.price > 0]
+    prices = [annonce.price for annonce in annonces if annonce.price > 0]
     if not prices:
-        return annonces, 0.0, 0.0, 0.0
+        return annonces, 0.0, 0.0, 0.0, 0.0, 10
 
-    # Supprimer les outliers (prix < P10 ou > P90)
-    prices_sorted = sorted(prices)
-    p10 = prices_sorted[max(0, len(prices_sorted) // 10)]
-    p90 = prices_sorted[min(len(prices_sorted) - 1, int(len(prices_sorted) * 0.9))]
-    filtered = [p for p in prices if p10 <= p <= p90]
-    if not filtered:
-        filtered = prices
+    filtered_prices = _filtrer_outliers(prices)
+    moyenne = statistics.mean(filtered_prices)
+    mediane = statistics.median(filtered_prices)
+    fiabilite = _fiabilite_marche(filtered_prices)
 
-    avg = statistics.mean(filtered)
-    return annonces, avg, min(filtered), max(filtered)
+    ref_min = min(filtered_prices)
+    ref_max = max(filtered_prices)
+    annonces_ref = [annonce for annonce in annonces if ref_min <= annonce.price <= ref_max]
+    if len(annonces_ref) < 3:
+        annonces_ref = sorted(
+            annonces,
+            key=lambda annonce: abs(annonce.price - mediane) if annonce.price > 0 else 10**9,
+        )
+
+    return annonces_ref, moyenne, ref_min, ref_max, mediane, fiabilite
 
 
 def calculer_prix_suggere(
     prix_achat: float,
     prix_marche_moyen: float,
+    prix_marche_mediane: float,
     etat: str,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float, float]:
     """
-    Calcule le prix de revente optimal.
-    Retourne (prix_suggere, marge_absolue, marge_pct).
+    Calcule les prix de vente utiles.
+    Retourne (prix_suggere, prix_vente_rapide, prix_min_rentable, marge, marge_pct).
     """
-    decote = DECOTE_ETAT.get(etat, 0.65)
+    if prix_achat <= 0:
+        raise ValueError("Le prix d'achat doit être supérieur à 0.")
 
-    # Prix plafond basé sur le marché (compétitif : légèrement sous la moyenne)
-    prix_marche_cible = prix_marche_moyen * 0.92 if prix_marche_moyen > 0 else 0
+    prix_min_rentable = round(prix_achat * (1 + MARGE_MIN), 2)
+    ancre_marche = min(
+        [value for value in (prix_marche_mediane, prix_marche_moyen) if value > 0],
+        default=0.0,
+    )
 
-    # Prix plancher basé sur l'achat (marge min)
-    prix_min_marge = prix_achat * (1 + MARGE_MIN)
-
-    # Prix suggéré : meilleur entre marché et marge mini
-    if prix_marche_cible > prix_min_marge:
-        prix = prix_marche_cible
-    elif prix_min_marge > 0:
-        prix = prix_min_marge
+    if ancre_marche > 0:
+        prix_vente_rapide_brut = max(prix_min_rentable, ancre_marche * 0.93)
+        prix_suggere_brut = max(prix_min_rentable, ancre_marche * 0.98)
     else:
-        # Pas de référence marché → appliquer la décote sur le prix d'achat supposé neuf
-        prix = prix_achat * decote * 1.2
+        buffer = {
+            "Neuf avec étiquette": 1.26,
+            "Neuf sans étiquette": 1.23,
+            "Très bon état": 1.20,
+            "Bon état": 1.18,
+            "Satisfaisant": 1.16,
+        }.get(etat, 1.20)
+        prix_vente_rapide_brut = prix_achat * max(1 + MARGE_MIN, buffer)
+        prix_suggere_brut = prix_vente_rapide_brut * 1.06
 
-    # Arrondir au .99 attractif
-    prix = round(prix - 0.01, 0) + 0.99 if prix > 1 else prix
-    prix = round(prix, 2)
+    prix_vente_rapide = max(prix_min_rentable, _prix_attractif(prix_vente_rapide_brut))
+    prix_suggere = max(prix_vente_rapide, prix_min_rentable, _prix_attractif(prix_suggere_brut))
 
-    marge = prix - prix_achat
-    marge_pct = (marge / prix_achat * 100) if prix_achat > 0 else 0
+    marge = round(prix_suggere - prix_achat, 2)
+    marge_pct = (marge / prix_achat * 100) if prix_achat > 0 else 0.0
 
-    return prix, marge, marge_pct
+    return round(prix_suggere, 2), round(prix_vente_rapide, 2), prix_min_rentable, marge, marge_pct
 
 
 def score_opportunite(
     prix_achat: float,
     prix_marche_moyen: float,
+    prix_marche_mediane: float,
     nb_annonces: int,
     marge_pct: float,
+    fiabilite_marche: int,
 ) -> int:
     """Score 0-100 indiquant le potentiel de l'opération."""
-    score = 50
+    score = 42
 
-    # Marge : +30 si > 50%, +15 si > 25%, -20 si < 0
     if marge_pct >= 50:
-        score += 30
-    elif marge_pct >= 25:
-        score += 15
-    elif marge_pct >= 10:
-        score += 5
+        score += 28
+    elif marge_pct >= 30:
+        score += 18
+    elif marge_pct >= 15:
+        score += 10
     elif marge_pct < 0:
-        score -= 20
+        score -= 25
+    elif marge_pct < 10:
+        score -= 8
 
-    # Concurrence : moins d'annonces = mieux
     if nb_annonces == 0:
-        score += 10   # niche, peu de concurrence
+        score -= 6
     elif nb_annonces < 5:
-        score += 15
+        score += 8
     elif nb_annonces < 20:
-        score += 5
-    elif nb_annonces > 50:
-        score -= 10
+        score += 4
+    elif nb_annonces > 60:
+        score -= 8
 
-    # Rapport prix achat / marché
-    if prix_marche_moyen > 0 and prix_achat > 0:
-        ratio = prix_achat / prix_marche_moyen
-        if ratio < 0.4:
-            score += 20   # acheté très bon marché
-        elif ratio < 0.6:
-            score += 10
-        elif ratio > 0.9:
-            score -= 15
+    ancre_marche = prix_marche_mediane or prix_marche_moyen
+    if ancre_marche > 0 and prix_achat > 0:
+        ratio = prix_achat / ancre_marche
+        if ratio <= 0.45:
+            score += 18
+        elif ratio <= 0.65:
+            score += 9
+        elif ratio >= 0.95:
+            score -= 14
 
+    score += int((fiabilite_marche - 50) / 5)
     return max(0, min(100, score))
 
 
 def generer_titre(produit: str, etat: str) -> str:
-    """
-    Génère un titre attractif pour l'annonce Vinted (60 caractères max).
-    Règles Vinted : pas de majuscules excessives, description concise.
-    """
+    """Genere un titre propre pour une future annonce."""
     produit_clean = produit.strip().title()
     etat_court = {
-        "Neuf avec étiquette":  "Neuf avec étiquette",
-        "Neuf sans étiquette":  "Neuf sans étiquette ✨",
-        "Très bon état":        "Très bon état",
-        "Bon état":             "Bon état",
-        "Satisfaisant":         "Bon prix",
+        "Neuf avec étiquette": "Neuf avec étiquette",
+        "Neuf sans étiquette": "Neuf sans étiquette",
+        "Très bon état": "Très bon état",
+        "Bon état": "Bon état",
+        "Satisfaisant": "Petit prix",
     }.get(etat, "")
 
-    titre = f"{produit_clean} — {etat_court}" if etat_court else produit_clean
-
-    # Tronquer à 60 caractères
-    if len(titre) > 60:
-        titre = titre[:57] + "…"
-    return titre
+    titre = f"{produit_clean} - {etat_court}" if etat_court else produit_clean
+    return titre if len(titre) <= 60 else titre[:57] + "..."
 
 
 def generer_description(
     produit: str,
     etat: str,
-    prix_achat: float,
     prix_suggere: float,
     annonces_ref: list,
 ) -> str:
-    """
-    Génère une description complète et optimisée pour Vinted.
-    """
-    # Prix du marché pour la référence
+    """Genere une description reutilisable pour Vinted."""
     prix_ref_str = ""
     if annonces_ref:
-        prices = [a.price for a in annonces_ref if a.price > 0]
+        prices = [annonce.price for annonce in annonces_ref if annonce.price > 0]
         if prices:
             avg = statistics.mean(prices)
-            prix_ref_str = f"Prix moyen du marché : {avg:.0f} €\n"
+            prix_ref_str = f"Positionnement marché observé autour de {avg:.0f} €.\n"
 
     etat_desc = {
-        "Neuf avec étiquette":  "Article neuf, jamais porté/utilisé, étiquette d'origine présente.",
-        "Neuf sans étiquette":  "Article neuf ou comme neuf, étiquette retirée mais jamais utilisé.",
-        "Très bon état":        "Article en très bon état, peu utilisé, aucun défaut visible.",
-        "Bon état":             "Article en bon état général, légères traces d'utilisation normales.",
-        "Satisfaisant":         "Article fonctionnel avec quelques marques d'usure, prix ajusté en conséquence.",
+        "Neuf avec étiquette": "Article neuf, jamais utilisé, avec étiquette.",
+        "Neuf sans étiquette": "Article neuf ou quasi neuf, jamais utilisé.",
+        "Très bon état": "Article en très bon état, propre et prêt à être porté ou utilisé.",
+        "Bon état": "Article en bon état général avec une usure normale.",
+        "Satisfaisant": "Article fonctionnel avec quelques traces visibles, prix ajusté.",
     }.get(etat, "Article en bon état.")
 
-    desc = f"""{produit.strip()} à vendre !
+    desc = f"""{produit.strip()} à vendre.
 
 {etat_desc}
 
-✅ Vendu rapidement, expédition soignée.
-📦 Envoi sous 48h après paiement.
-💬 N'hésitez pas à me faire une offre ou à poser vos questions !
+{prix_ref_str}✅ Envoi soigné.
+📦 Expédition rapide après paiement.
+💬 Je réponds volontiers aux questions et offres raisonnables.
 
-{prix_ref_str}🔒 Paiement sécurisé via Vinted — acheteur protégé."""
-
+Prix affiché conseillé : {prix_suggere:.2f} €."""
     return desc.strip()
 
 
 def generer_conseil(
     marge_pct: float,
     nb_annonces: int,
-    prix_marche_moyen: float,
-    prix_achat: float,
+    fiabilite_marche: int,
+    prix_vente_rapide: float,
+    prix_suggere: float,
+    prix_min_rentable: float,
 ) -> str:
-    """Génère un conseil personnalisé selon la situation du marché."""
-    conseils = []
+    """Genere un conseil synthétique et actionnable."""
+    conseils = [
+        f"Vente rapide autour de {prix_vente_rapide:.2f} € ; prix cible plus patient autour de {prix_suggere:.2f} €.",
+        f"Évitez de descendre sous {prix_min_rentable:.2f} € pour garder votre marge minimale.",
+    ]
 
     if marge_pct < 0:
-        conseils.append("⚠️ Attention : le prix du marché est inférieur à votre prix d'achat. "
-                        "Revenez sur votre décision d'achat ou recherchez un canal de vente alternatif.")
+        conseils.append("Le coût d'achat est trop proche du marché : opération risquée en l'état.")
     elif marge_pct < 15:
-        conseils.append("💡 Marge faible. Pour améliorer votre résultat, "
-                        "soignez les photos et la description pour justifier un prix plus élevé.")
+        conseils.append("Marge serrée : misez sur des photos propres et une annonce très claire.")
     elif marge_pct >= 40:
-        conseils.append("🚀 Excellente opportunité ! Le marché valorise bien ce produit. "
-                        "Publiez rapidement avant que la concurrence augmente.")
+        conseils.append("Très bon potentiel : publiez vite pendant que la fenêtre de prix est favorable.")
 
     if nb_annonces == 0:
-        conseils.append("🔍 Aucune annonce similaire trouvée — produit rare ou niche. "
-                        "Testez un prix légèrement plus élevé.")
+        conseils.append("Peu de références visibles : bonne piste, mais vérifiez aussi d'autres plateformes.")
     elif nb_annonces > 30:
-        conseils.append("📊 Marché saturé. Différenciez-vous avec de belles photos "
-                        "et répondez rapidement aux messages.")
+        conseils.append("Marché chargé : il faudra être compétitif et réactif sur les messages.")
 
-    if not conseils:
-        conseils.append("✨ Bon potentiel. Publiez avec de bonnes photos pour maximiser vos chances.")
+    if fiabilite_marche < 40:
+        conseils.append("La confiance marché est faible : utilisez cette estimation comme ordre de grandeur, pas comme vérité absolue.")
+    elif fiabilite_marche >= 75:
+        conseils.append("Les références observées sont assez cohérentes pour fixer un prix avec confiance.")
 
     return " ".join(conseils)
 
@@ -288,22 +378,27 @@ def analyser_revente(
     etat: str,
     scraper_instance,
 ) -> AnalyseRevente:
-    """
-    Fonction principale — retourne une AnalyseRevente complète.
-    """
-    # 1. Analyse du marché
-    annonces, avg, pmin, pmax = analyser_marche(produit, etat, scraper_instance)
+    """Fonction principale - retourne une AnalyseRevente complète."""
+    produit = (produit or "").strip()
+    if len(produit) < 3:
+        raise ValueError("Le produit doit contenir au moins 3 caractères.")
+    if prix_achat <= 0:
+        raise ValueError("Le prix d'achat doit être supérieur à 0.")
 
-    # 2. Prix suggéré
-    prix_suggere, marge, marge_pct = calculer_prix_suggere(prix_achat, avg, etat)
-
-    # 3. Score opportunité
-    score = score_opportunite(prix_achat, avg, len(annonces), marge_pct)
-
-    # 4. Titre + description
+    annonces, avg, pmin, pmax, mediane, fiabilite = analyser_marche(produit, etat, scraper_instance)
+    prix_suggere, prix_vente_rapide, prix_min_rentable, marge, marge_pct = calculer_prix_suggere(
+        prix_achat, avg, mediane, etat
+    )
+    frais_plateforme = round(prix_suggere * FRAIS_PLATEFORME, 2)
+    frais_expedition = FRAIS_EXPEDITION
+    marge_nette = round(prix_suggere - frais_plateforme - frais_expedition - prix_achat, 2)
+    marge_nette_pct = round((marge_nette / prix_achat * 100), 1) if prix_achat > 0 else 0.0
+    score = score_opportunite(prix_achat, avg, mediane, len(annonces), marge_pct, fiabilite)
     titre = generer_titre(produit, etat)
-    description = generer_description(produit, etat, prix_achat, prix_suggere, annonces)
-    conseil = generer_conseil(marge_pct, len(annonces), avg, prix_achat)
+    description = generer_description(produit, etat, prix_suggere, annonces)
+    conseil = generer_conseil(
+        marge_pct, len(annonces), fiabilite, prix_vente_rapide, prix_suggere, prix_min_rentable
+    )
 
     return AnalyseRevente(
         produit=produit,
@@ -312,13 +407,21 @@ def analyser_revente(
         prix_marche_moyen=avg,
         prix_marche_min=pmin,
         prix_marche_max=pmax,
+        prix_marche_mediane=mediane,
         nb_annonces=len(annonces),
         prix_suggere=prix_suggere,
+        prix_vente_rapide=prix_vente_rapide,
+        prix_min_rentable=prix_min_rentable,
+        frais_plateforme=frais_plateforme,
+        frais_expedition=frais_expedition,
         marge_estimee=marge,
         marge_pct=marge_pct,
+        marge_nette=marge_nette,
+        marge_nette_pct=marge_nette_pct,
         titre=titre,
         description=description,
         conseil=conseil,
         score_opportunite=score,
+        fiabilite_marche=fiabilite,
         annonces_ref=annonces[:6],
     )

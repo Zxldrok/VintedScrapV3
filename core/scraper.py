@@ -2,11 +2,57 @@
 scraper.py — Module de scraping pour Vinted (multi-pays)
 """
 
-import requests, json, re, csv, time, logging, unicodedata, uuid, html
+import requests, json, re, csv, time, logging, unicodedata, uuid, html, os, threading
 from typing import Optional
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CACHE_DIR = os.path.join(_DIR, "data", "cache")
+_SEARCH_CACHE_FILE = os.path.join(_CACHE_DIR, "search_cache.json")
+_DESC_CACHE_FILE = os.path.join(_CACHE_DIR, "description_cache.json")
+_CACHE_LOCK = threading.RLock()
+_SEARCH_TTL = 300
+_DESC_TTL = 7 * 24 * 3600
+
+
+def _load_cache(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+            return payload if isinstance(payload, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_cache(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _cache_get(path: str, key: str, ttl_seconds: int):
+    with _CACHE_LOCK:
+        cache = _load_cache(path)
+        item = cache.get(key)
+        if not item:
+            return None
+        if time.time() - float(item.get("ts", 0)) > ttl_seconds:
+            cache.pop(key, None)
+            _save_cache(path, cache)
+            return None
+        return item.get("value")
+
+
+def _cache_put(path: str, key: str, value, max_entries: int = 120) -> None:
+    with _CACHE_LOCK:
+        cache = _load_cache(path)
+        cache[key] = {"ts": time.time(), "value": value}
+        if len(cache) > max_entries:
+            ordered = sorted(cache.items(), key=lambda kv: kv[1].get("ts", 0), reverse=True)
+            cache = dict(ordered[:max_entries])
+        _save_cache(path, cache)
 
 # ─── Multi-Pays ────────────────────────────────────────────────────────────────
 PAYS_DISPONIBLES = {
@@ -229,10 +275,32 @@ class VintedScraper:
                    brand_id: Optional[int] = None, size_id: Optional[int] = None,
                    color_id: Optional[int] = None, category_id: Optional[int] = None,
                    vendeur_id: Optional[str] = None,
-                   max_pages: int = 5, par_page: int = 96) -> list:
+                   max_pages: int = 5, par_page: int = 96,
+                   use_cache: bool = True) -> list:
         if not mots_cles.strip():
             raise ValueError("Mots-clés vides.")
         query = mots_cles.strip()
+        cache_key = json.dumps({
+            "base_url": self.base_url,
+            "query": query,
+            "prix_min": prix_min,
+            "prix_max": prix_max,
+            "order": order,
+            "brand_id": brand_id,
+            "size_id": size_id,
+            "color_id": color_id,
+            "category_id": category_id,
+            "vendeur_id": vendeur_id,
+            "max_pages": max_pages,
+            "par_page": par_page,
+        }, sort_keys=True, ensure_ascii=False)
+        if use_cache:
+            cached_items = _cache_get(_SEARCH_CACHE_FILE, cache_key, _SEARCH_TTL)
+            if isinstance(cached_items, list):
+                annonces = [Annonce(it, self.base_url) for it in cached_items]
+                filtrees = _filtrer_par_titre(annonces, query)
+                logger.info(f"Cache recherche : {len(filtrees)} annonces.")
+                return filtrees
         tous_items = []
         for page in range(1, max_pages + 1):
             params: dict = {"search_text": query, "per_page": par_page,
@@ -269,12 +337,16 @@ class VintedScraper:
             time.sleep(self.delai)
         annonces = [Annonce(it, self.base_url) for it in tous_items]
         filtrees = _filtrer_par_titre(annonces, query)
+        if use_cache:
+            _cache_put(_SEARCH_CACHE_FILE, cache_key, tous_items)
         logger.info(f"Filtrage : {len(annonces)} → {len(filtrees)}.")
         return filtrees
 
     def rechercher_multi(self, mots_cles: str, prix_min=None, prix_max=None,
                          order="newest_first", brand_id=None, size_id=None,
-                         color_id=None, category_id=None, vendeur_id=None) -> list:
+                         color_id=None, category_id=None, vendeur_id=None,
+                         max_pages: int = MAX_PAGES, par_page: int = 96,
+                         use_cache: bool = True) -> list:
         """Recherche multi-termes (virgule), dédupliqués, avec tous les filtres."""
         termes = [t.strip() for t in mots_cles.split(",") if t.strip()]
         if not termes:
@@ -284,7 +356,8 @@ class VintedScraper:
             logger.info(f"Recherche : '{terme}'")
             for a in self.rechercher(terme, prix_min, prix_max, order,
                                      brand_id, size_id, color_id, category_id,
-                                     vendeur_id, max_pages=MAX_PAGES):
+                                     vendeur_id, max_pages=max_pages,
+                                     par_page=par_page, use_cache=use_cache):
                 if a.id not in vus:
                     vus.add(a.id)
                     resultats.append(a)
@@ -294,6 +367,12 @@ class VintedScraper:
     def fetch_description(self, annonce) -> str:
         """Récupère la description depuis plusieurs sources de la page produit."""
         try:
+            cache_key = str(getattr(annonce, "id", "") or getattr(annonce, "url", ""))
+            cached_desc = _cache_get(_DESC_CACHE_FILE, cache_key, _DESC_TTL)
+            if isinstance(cached_desc, str):
+                annonce.description = cached_desc
+                return cached_desc
+
             r = self.session.get(annonce.url, timeout=12)
             r.raise_for_status()
             page = r.text
@@ -330,6 +409,7 @@ class VintedScraper:
                     desc = _from_obj(json.loads(raw.strip()))
                     if desc:
                         annonce.description = desc
+                        _cache_put(_DESC_CACHE_FILE, cache_key, desc, max_entries=400)
                         return desc
                 except Exception:
                     continue
@@ -345,6 +425,7 @@ class VintedScraper:
                     desc = _clean(match.group(1))
                     if desc:
                         annonce.description = desc
+                        _cache_put(_DESC_CACHE_FILE, cache_key, desc, max_entries=400)
                         return desc
 
             return ""

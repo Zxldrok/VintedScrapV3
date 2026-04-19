@@ -90,6 +90,21 @@ LABELS_CAT = {
 }
 
 
+def _classer_annonce(annonce) -> str:
+    titre = f"{getattr(annonce, 'title', '')} {getattr(annonce, 'brand', '')}".lower()
+    if any(token in titre for token in ("iphone", "samsung", "pixel", "macbook", "ipad", "switch", "ps5", "xbox", "console", "phone")):
+        return "hifi"
+    if any(token in titre for token in ("velo", "bike", "bmx", "route", "gravel")):
+        return "velo"
+    if any(token in titre for token in ("pokemon", "one piece", "yugioh", "funko", "lego", "game", "jeu", "switch", "playstation")):
+        return "jeux"
+    if any(token in titre for token in ("maillot", "ski", "snow", "running", "fitness", "velo", "raquette", "golf")):
+        return "sport"
+    if getattr(annonce, "size", "") or any(token in titre for token in ("nike", "adidas", "zara", "lv", "gucci", "jacket", "shirt", "sac", "robe")):
+        return "mode"
+    return "generaliste"
+
+
 def _nettoyer_query(titre: str, marque: str = "") -> str:
     stop = {"taille", "xl", "xxl", "xs", "neuf", "tres", "bon", "etat",
             "occasion", "comme", "jamais", "porte", "vendu", "lot", "avec",
@@ -125,3 +140,36 @@ def plateformes_par_categorie() -> dict:
 
 def get_query_annonce(annonce) -> str:
     return _nettoyer_query(annonce.title, getattr(annonce, "brand", ""))
+
+
+def plateformes_recommandees(annonce) -> list[Plateforme]:
+    categorie = _classer_annonce(annonce)
+    query = get_query_annonce(annonce).lower()
+    recommended = [p for p in PLATEFORMES if p.categorie == categorie]
+    if categorie != "generaliste":
+        recommended.extend(p for p in PLATEFORMES if p.categorie == "generaliste")
+
+    if "one piece" in query or "pokemon" in query or "lego" in query:
+        bonus = {"eBay France", "Rakuten", "Leboncoin", "Gamecash", "Easy Cash"}
+        recommended.extend(p for p in PLATEFORMES if p.nom in bonus)
+
+    seen = set()
+    ordered = []
+    for plateforme in recommended:
+        if plateforme.nom not in seen:
+            seen.add(plateforme.nom)
+            ordered.append(plateforme)
+    return ordered[:8]
+
+
+def explication_recommandation(annonce) -> str:
+    categorie = _classer_annonce(annonce)
+    labels = {
+        "mode": "mode et seconde main textile",
+        "hifi": "high-tech et electronique",
+        "sport": "equipement sport",
+        "velo": "velo et equipement associe",
+        "jeux": "jeux, cartes et collection",
+        "generaliste": "plateformes generalistes",
+    }
+    return f"Selection optimisee pour {labels.get(categorie, 'le produit detecte')}."

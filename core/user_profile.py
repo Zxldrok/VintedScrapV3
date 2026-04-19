@@ -231,6 +231,31 @@ def get_profile_summary() -> str:
     return load_profile().get("summary") or "Profil en cours d'apprentissage."
 
 
+def get_profile_snapshot() -> dict[str, Any]:
+    profile = load_profile()
+    return {
+        "updated_at": profile.get("updated_at", ""),
+        "summary": profile.get("summary") or "Profil en cours d'apprentissage.",
+        "search_count": profile.get("search_count", 0),
+        "open_count": profile.get("open_count", 0),
+        "favorite_count": profile.get("favorite_count", 0),
+        "target_count": profile.get("target_count", 0),
+        "preferred_brands": _top_keys(profile.get("preferred_brands", {}), 5),
+        "preferred_conditions": _top_keys(profile.get("preferred_conditions", {}), 5),
+        "preferred_sellers": _top_keys(profile.get("preferred_sellers", {}), 5),
+        "preferred_terms": _top_keys(profile.get("preferred_terms", {}), 8),
+        "price_min_pref": profile.get("price_min_pref"),
+        "price_max_pref": profile.get("price_max_pref"),
+        "price_avg_pref": profile.get("price_avg_pref"),
+        "last_searches": list(profile.get("last_searches", [])[-6:]),
+    }
+
+
+def get_recent_events(limit: int = 10) -> list[dict[str, Any]]:
+    events = _load_events()
+    return list(reversed(events[-max(1, limit):]))
+
+
 def get_preferred_search_terms(limit: int = 5) -> list[str]:
     profile = load_profile()
     terms = sorted(profile.get("preferred_terms", {}).items(), key=lambda kv: kv[1], reverse=True)

@@ -30,6 +30,9 @@ data/compte.json
 data/user_profile.json
 data/user_events.json
 data/plugins_registry.json
+data/resell_history.json
+data/discord_alerts.json
+data/cache/
 
 # =========================
 # IDE

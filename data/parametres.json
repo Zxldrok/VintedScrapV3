@@ -1,0 +1,25 @@
+{
+  "mode_liste_par_defaut": false,
+  "sidebar_auto_collapsing": true,
+  "sidebar_animation": true,
+  "appearance_mode": "dark",
+  "articles_par_page": 10,
+  "restaurer_derniere_recherche": true,
+  "last_search_state": {
+    "query": "display",
+    "pays": "🇫🇷 France",
+    "price_min": "",
+    "price_max": "",
+    "categorie": "— Toutes —",
+    "couleur": "— Toutes —",
+    "vendeur": "",
+    "tri": "affinite",
+    "mode_liste": false,
+    "etats": [],
+    "alerte_intervalle": "30 sec",
+    "alerte_exclure": "",
+    "alerte_ignore": "",
+    "alerte_prix_max": "",
+    "alerte_affinite": "Toutes"
+  }
+}

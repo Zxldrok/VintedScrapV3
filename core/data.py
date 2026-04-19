@@ -12,6 +12,17 @@ FAVORIS_FILE    = os.path.join(_DATA_DIR, "favoris.json")
 RECHERCHES_FILE = os.path.join(_DATA_DIR, "recherches.json")
 HISTORIQUE_FILE = os.path.join(_DATA_DIR, "historique.json")
 CIBLES_FILE     = os.path.join(_DATA_DIR, "cibles.json")
+SETTINGS_FILE   = os.path.join(_DATA_DIR, "parametres.json")
+
+DEFAULT_SETTINGS = {
+    "mode_liste_par_defaut": False,
+    "sidebar_auto_collapsing": True,
+    "sidebar_animation": True,
+    "appearance_mode": "dark",
+    "articles_par_page": 10,
+    "restaurer_derniere_recherche": True,
+    "last_search_state": {},
+}
 
 _lock = threading.RLock()
 _favoris_cache: Optional[list] = None
@@ -27,6 +38,26 @@ def _load(path: str):
 def _save(path: str, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+# ─── Paramètres de l'application ──────────────────────────────────────────────
+
+def charger_parametres() -> dict:
+    with _lock:
+        raw = _load(SETTINGS_FILE)
+        if not isinstance(raw, dict):
+            raw = {}
+        params = dict(DEFAULT_SETTINGS)
+        params.update({k: raw[k] for k in DEFAULT_SETTINGS.keys() if k in raw})
+        return params
+
+
+def sauvegarder_parametres(params: dict):
+    if not isinstance(params, dict):
+        return
+    sanitized = dict(DEFAULT_SETTINGS)
+    sanitized.update(params)
+    with _lock:
+        _save(SETTINGS_FILE, sanitized)
 
 # ─── Favoris ──────────────────────────────────────────────────────────────────
 
@@ -81,17 +112,31 @@ def charger_recherches() -> list:
         return _load(RECHERCHES_FILE)
 
 def sauvegarder_recherche(nom: str, mots_cles: str, prix_min, prix_max,
-                           pays: str = "🇫🇷 France", ordre: str = "newest_first"):
+                           pays: str = "🇫🇷 France", ordre: str = "prix_asc",
+                           categorie: str | None = None, couleur: str | None = None,
+                           vendeur: str | None = None, etats: list[int] | None = None,
+                           mode_liste: bool | None = None):
     with _lock:
         recs = _load(RECHERCHES_FILE)
+        payload = {
+            "nom": nom,
+            "mots_cles": mots_cles,
+            "prix_min": prix_min,
+            "prix_max": prix_max,
+            "pays": pays,
+            "ordre": ordre,
+            "categorie": categorie,
+            "couleur": couleur,
+            "vendeur": vendeur,
+            "etats": list(etats or []),
+            "mode_liste": bool(mode_liste) if mode_liste is not None else None,
+        }
         for r in recs:
             if r["nom"] == nom:
-                r.update({"mots_cles": mots_cles, "prix_min": prix_min,
-                           "prix_max": prix_max, "pays": pays, "ordre": ordre})
+                r.update(payload)
                 _save(RECHERCHES_FILE, recs)
                 return
-        recs.append({"nom": nom, "mots_cles": mots_cles, "prix_min": prix_min,
-                     "prix_max": prix_max, "pays": pays, "ordre": ordre})
+        recs.append(payload)
         _save(RECHERCHES_FILE, recs)
 
 def supprimer_recherche(nom: str):
